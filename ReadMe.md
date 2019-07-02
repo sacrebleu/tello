@@ -24,4 +24,6 @@ v1 is to
 The control software should also validate that flight plans are sane, and that while
 horizontal displacement is ok at termination, vertical displacement isn't.
 
-        
+###### ToDo
+
+1. integrate https://github.com/gizak/termui         

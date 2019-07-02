@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+	"log"
 
 	"gobot.io/x/gobot"
 	"gobot.io/x/gobot/platforms/dji/tello"
@@ -15,7 +16,7 @@ import (
 func Grab(drone *tello.Driver) {
 	{
 		if drone == nil {
-			fmt.Println("Error - drone is not initialised")
+			log.Println("Error - drone is not initialised")
 			return
 		}
 
@@ -27,7 +28,7 @@ func Grab(drone *tello.Driver) {
 		}
 
 		drone.On(tello.ConnectedEvent, func(data interface{}) {
-			fmt.Println("Video capture connected")
+			log.Println("Video capture connected")
 			drone.StartVideo()
 			drone.SetVideoEncoderRate(3)
 			gobot.Every(100*time.Millisecond, func() {
