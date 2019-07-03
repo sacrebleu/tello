@@ -4,25 +4,27 @@ import (
 	"strings"
 )
 
+// Buffer implements a very simple structure which contains at most size elements.  Every time a new element is added,
+// the head of the buffer is evicted.
 type Buffer struct {
-	values [] string
+	Values [] string
 }
 
 func (Buffer) New(size int) Buffer {
-	return Buffer{values: make([]string, size)}
+	return Buffer{Values: make([]string, size)}
 }
 
 func (buffer * Buffer) Append(value string) * Buffer {
-	a := buffer.values[1:]
-	buffer.values = append(a, value)
+	a := buffer.Values[1:]
+	buffer.Values = append(a, value)
 	return buffer
 }
 
 func (buffer * Buffer) Join() string {
 	var str strings.Builder
 
-	for i := 0; i < len(buffer.values); i++ {
-		str.WriteString(buffer.values[i])
+	for i := 0; i < len(buffer.Values); i++ {
+		str.WriteString(buffer.Values[i])
 		str.WriteString("\n")
 	}
 
