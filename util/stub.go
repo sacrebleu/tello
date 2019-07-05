@@ -5,8 +5,8 @@ import (
 	"math/rand"
 )
 
-func MockFlightData() tello.FlightData {
-	return tello.FlightData{
+func MockFlightData() *tello.FlightData {
+	return &tello.FlightData{
 		BatteryLow: true,
 		BatteryPercentage: 10,
 		CameraState: 1,

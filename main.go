@@ -44,7 +44,7 @@ func main() {
 	screen := buildUi()
 
 	if !dryrun {
-		dev = initDrone()
+		dev = initDrone(*screen)
 	}
 
 	// construct app state container
@@ -76,19 +76,8 @@ func main() {
 			}
 		}
 	} else {
-		events := dev.Drone.Subscribe()
-
-		for app.Live {
-			ev, _ := <-events
-			fmt.Println(ev)
-			if ev.Name == "FlightDataEvent" {
-				fd, ok := ev.Data.(tello.FlightData)
-				if ok {
-					updateTelemetry(fd, screen.Telemetry)
-				}
-			}
-		}
 		err := dev.Robot.Start()
+
 		if err != nil {
 			log.Fatal("Error", err)
 		}
@@ -114,6 +103,7 @@ func registerShutdownHook(app util.Application) {
 		buffer.Append("Shutting down connection to drone")
 		if !dryrun {
 			if app.Dev != nil && app.Dev.Drone != nil {
+				buffer.Append("Cleaning up drone connections...")
 				cleanup(app.Dev.Drone)
 			}
 		}
@@ -125,7 +115,7 @@ func registerShutdownHook(app util.Application) {
 }
 
 // Connect to the tello drone if it exists
-func initDrone() util.Device {
+func initDrone(screen util.Screen) util.Device {
 
 	drone := tello.NewDriver("8890")
 
@@ -135,12 +125,18 @@ func initDrone() util.Device {
 		func() { video.Grab(drone) },
 	)
 
+	drone.On(tello.FlightDataEvent, func(data interface{}) {
+		df := data.(*tello.FlightData)
+		updateTelemetry(df, screen.Telemetry)
+	})
+
 	return util.Device{ Drone: drone, Robot: robot}
 }
 
 // clean shutdown of the Tello drone
 func cleanup(robot *tello.Driver) {
-	fmt.Println("interrupt received, cleanup")
+	buffer.Append("interrupt received, cleanup")
+
 	err := robot.Halt()
 	if err != nil {
 		fmt.Println("Error", err)
@@ -158,12 +154,12 @@ func buildUi() * util.Screen {
 	hp := widgets.NewParagraph()
 	hp.Title = "DJI Tello Telemetry"
 	//hp.Text
-	hp.SetRect(0, 0, 140, 30)
+	hp.SetRect(0, 0, 140, 32)
 	hp.BorderStyle.Fg = ui.ColorWhite
 
 	hlp := widgets.NewParagraph()
 	hlp.Title = " q - quit   j - scroll down   k - scroll up "
-	hlp.SetRect(0, 29, 140, 30)
+	hlp.SetRect(0, 32, 140, 32)
 
 	//p := widgets.NewParagraph()
 	p := widgets.NewList()
@@ -192,7 +188,17 @@ func buildUi() * util.Screen {
 
 	disp := util.NewCompass(111, 8, 139, 24)
 
-	s.Telemetry = util.Telemetry{Speed: spd, Direction: disp}
+	table1 := widgets.NewTable()
+	table1.TextStyle = ui.NewStyle(ui.ColorWhite)
+	table1.SetRect(111, 24, 139, 31)
+	table1.Rows = [][]string{
+		{ "", "", ""},
+		{ "", "", ""},
+		{ "", "", ""},
+	}
+	//ui.Render(table1)
+
+	s.Telemetry = util.Telemetry{Speed: spd, Direction: disp, Warnings: table1}
 
 	ui.Render(hp, hlp)
 
@@ -225,10 +231,10 @@ func refreshElements(app * util.Application) {
 	app.Ui.LogArea.Rows = buffer.Values
 	app.Ui.FlightPlan.Rows = app.FlightPlan.Render()
 	ui.Render(app.Ui.LogArea, app.Ui.FlightPlan)
-	ui.Render(app.Ui.Telemetry.Direction, app.Ui.Telemetry.Speed)
+	ui.Render(app.Ui.Telemetry.Direction, app.Ui.Telemetry.Speed, app.Ui.Telemetry.Warnings)
 }
 
-func updateTelemetry(data tello.FlightData, telemetry util.Telemetry) {
+func updateTelemetry(data * tello.FlightData, telemetry util.Telemetry) {
 	angle := math.Atan2(float64(data.NorthSpeed), float64(data.EastSpeed))
 	bearing := angle * 180/math.Pi
 
@@ -236,5 +242,27 @@ func updateTelemetry(data tello.FlightData, telemetry util.Telemetry) {
 
 	telemetry.Speed.Text = fmt.Sprintf("Airspeed: %f\nGroundSpeed: %f\nVertical: %d", data.AirSpeed(), data.GroundSpeed(), data.VerticalSpeed)
 	telemetry.Direction.Title = fmt.Sprintf("Bearing %d" , degs) // convert to degrees
-	telemetry.Direction.AngleOffset = -angle
+	telemetry.Direction.AngleOffset = -angle - 0.1*math.Pi
+
+	telemetry.Warnings.Rows = [][]string{
+		{		format(data.TemperatureHigh, "Temp", "red", "white"),
+			    format(data.BatteryLow, "Batt", "red", "white"),
+			    format(data.BatteryLower, "!BAT", "red", "white")},
+		{		format(data.DroneHover, "Hvr", "green", "white"),
+				format(data.Flying, "Fly", "green", "white"),
+				format(data.FrontIn, "FrI", "green", "white")},
+		{		format(data.PressureState, "Prs", "green", "white"),
+				format(data.PowerState, "Pwr", "green", "white"),
+				format(data.ImuState, "Imu", "green", "white")},
+		}
+}
+
+func format(val bool, title string, onColour string, offColour string) (string) {
+	var ret string
+	if val {
+		ret = fmt.Sprintf("[%s](fg:%s)", title, onColour)
+	} else {
+		ret = fmt.Sprintf("[%s](fg:%s)", title, offColour)
+	}
+	return ret
 }
