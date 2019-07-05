@@ -9,8 +9,10 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path"
 	"syscall"
 	"time"
+	"flag"
 
 	ui "github.com/gizak/termui/v3"
 
@@ -21,38 +23,22 @@ import (
 	//ui "github.com/gizak/termui/v3"
 )
 
-// device - a struct to represent the tello drone
-type device struct {
-	drone *tello.Driver
-	robot *gobot.Robot
-}
-
-// application - a struct to represent the components of the application
-type application struct {
-	Ui *screen
-	Dev *device
-	live bool
-	ctrl chan os.Signal
-}
-
-// container for UI elements
-type screen struct {
-	LogArea *widgets.List
-	Speed *widgets.Paragraph
-}
-
-func (s * screen) displayAirspeed(ground float32, air float32) {
-	s.Speed.Text = fmt.Sprintf("Air: %10f m/s\nGnd: %10f m/s", air, ground)
-}
-
-var connect = false
+var connect = true
 
 var buffer util.Buffer
 
+var gp = os.Getenv("GOPATH")
+var ap = path.Join(gp, "src/tello/cfg")
+
+var flightPath = ap
+
 func main() {
+	flag.StringVar(&flightPath, "path", "path/to/flightplan.fp", "Specify the path to the flightplan you want to load")
+	flag.Parse()
+
 	buffer = util.Buffer.New(util.Buffer{}, 5)
 
-	var dev device
+	var dev util.Device
 
 	buffer.Append("Tello Driver 0.1")
 
@@ -63,23 +49,18 @@ func main() {
 	}
 
 	// construct app state container
-	var app = application{ Ui: screen, Dev: &dev, live: true, ctrl: make(chan os.Signal) }
+	var app = util.Application{ Ui: screen, Dev: &dev, Live: true, Ctrl: make(chan os.Signal) }
 
-	// ensure we catch events and handle them
 	registerShutdownHook(app)
 
-	//plan := route.NewPlan("ScareSomeCats.fpl")
-	//
-	//route.Append(plan, &route.Command{Action: "translate20", Description:"Translate 20cm", Offset:5} )
-	//route.Append(plan, &route.Command{Action: "translate50", Description:"Translate 50cm", Offset:20} )
+	app.ReadPlan(flightPath)
 
+	// ensure we catch events and handle them
 	go func() {
 		var count = 0
-		for app.live {
-			//buffer.Append(fmt.Sprintf("%b", app.live))
-			//buffer.Append(fmt.Sprintf("count: %d", count))
+		for app.Live {
 			time.Sleep(1*time.Second)
-			render(app)
+			render(&app)
 			count++
 		}
 	}()
@@ -87,36 +68,36 @@ func main() {
 	//route.Tabulate(plan)
 	buffer.Append("Connecting to Drone...")
 	if connect {
-		err := dev.robot.Start()
+		err := dev.Robot.Start()
 		if err != nil {
 			log.Fatal("Error", err)
 		}
 	} else {
 		buffer.Append("dummy mode enabled")
-		for app.live {
+		for app.Live {
 			time.Sleep(1*time.Second)
-			//buffer.Append(fmt.Sprintf("%b", app.live))
-			//buffer.Append("still alive")
+			//buffer.Append(fmt.Sprintf("%b", app.Live))
+			//buffer.Append("still aLive")
 		}
 	}
 
 }
 
 // listen for ^C and attempt to issue a graceful shutdown
-func registerShutdownHook(app application) {
-	signal.Notify(app.ctrl, os.Interrupt, syscall.SIGINT)
-	signal.Notify(app.ctrl, os.Interrupt, syscall.SIGTERM)
+func registerShutdownHook(app util.Application) {
+	signal.Notify(app.Ctrl, os.Interrupt, syscall.SIGINT)
+	signal.Notify(app.Ctrl, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		defer ui.Close() // only close the tty once we're done
-		<-app.ctrl
+		<-app.Ctrl
 		buffer.Append("Shutting down connection to drone")
 		if connect {
-			if app.Dev != nil && app.Dev.drone != nil {
-				cleanup(app.Dev.drone)
+			if app.Dev != nil && app.Dev.Drone != nil {
+				cleanup(app.Dev.Drone)
 			}
 		}
-		app.live = false
+		app.Live = false
 		buffer.Append("Waiting for shutdown.")
 		time.Sleep(2*time.Second)
 		os.Exit(0)
@@ -124,7 +105,7 @@ func registerShutdownHook(app application) {
 }
 
 // Connect to the tello drone if it exists
-func initDrone() device {
+func initDrone() util.Device {
 
 	drone := tello.NewDriver("8890")
 
@@ -134,7 +115,7 @@ func initDrone() device {
 		func() { video.Grab(drone) },
 	)
 
-	dev := device{drone: drone, robot: robot}
+	dev := util.Device{ Drone: drone, Robot: robot}
 
 	return dev
 }
@@ -149,53 +130,77 @@ func cleanup(robot *tello.Driver) {
 }
 
 // construct and lay out the ui
-func buildUi() * screen {
+func buildUi() * util.Screen {
 
 	if err := ui.Init(); err != nil {
 		log.Fatalf("failed to initialize termui: %v", err)
 	}
 
+	// border
+	hp := widgets.NewParagraph()
+	hp.Title = "DJI Tello Telemetry"
+	//hp.Text
+	hp.SetRect(0, 0, 120, 30)
+	hp.BorderStyle.Fg = ui.ColorWhite
+
+	hlp := widgets.NewParagraph()
+	hlp.Title = " q - quit   j - scroll down   k - scroll up "
+	hlp.SetRect(0, 29, 120, 30)
+
 	//p := widgets.NewParagraph()
 	p := widgets.NewList()
-	p.Title = "Flightplan"
+	p.Title = "Telemetry"
 	p.Rows = buffer.Values
-	p.SetRect(0, 0, 80, 7)
+	p.SetRect(1,  1, 80, 8)
 	p.BorderStyle.Fg = ui.ColorWhite
 
 	spd := widgets.NewParagraph()
-	spd.SetRect(81, 0, 120, 4)
+	spd.SetRect(81, 1, 119, 5)
 	spd.BorderStyle.Fg = ui.ColorWhite
 	spd.Title = "Drone Speed"
 
-	s := &screen{LogArea: p, Speed: spd}
+	fp := widgets.NewList()
+	fp.Title = "Flight Plan"
+	fp.SetRect(1, 8, 80, 16)
+	p.BorderStyle.Fg = ui.ColorWhite
+
+	s := &util.Screen{
+		LogArea: p,
+		Speed: spd,
+		FlightPlan: fp,
+		Help : hp,
+	}
+
+	ui.Render(hp, hlp)
 
 	return s
 }
 
 // render updates to the ui
-func render(app application) {
+func render(app * util.Application) {
 	uiEvents := ui.PollEvents()
 	ticker := time.NewTicker(200*time.Millisecond).C
-	for app.live {
+	for app.Live {
 		select {
 		case e := <-uiEvents:
 			//buffer.Append(fmt.Sprintf("event: %s", e.ID))
 			switch e.ID {
 			case "q", "<C-c>":
-				app.ctrl <- syscall.SIGTERM // invoke cleanup / shutdown handler
+				app.Ctrl <- syscall.SIGTERM // invoke cleanup / shutdown handler
+			case "j":
+				app.Ui.FlightPlan.ScrollDown()
+			case "k":
+				app.Ui.FlightPlan.ScrollUp()
 			}
 		case <-ticker:
-			app.Ui.displayAirspeed(rand.Float32() + 1, rand.Float32()+2)
-			refreshElements(app.Ui)
+			app.Ui.DisplayAirspeed(rand.Float32() + 1, rand.Float32()+2)
+			refreshElements(app)
 		}
 	}
 }
 
-func refreshElements(screen *screen) {
-	updateParagraph(screen)
-}
-
-func updateParagraph(screen *screen) {
-	screen.LogArea.Rows = buffer.Values
-	ui.Render(screen.LogArea, screen.Speed)
+func refreshElements(app * util.Application) {
+	app.Ui.LogArea.Rows = buffer.Values
+	app.Ui.FlightPlan.Rows = app.FlightPlan
+	ui.Render(app.Ui.LogArea, app.Ui.Speed, app.Ui.FlightPlan)
 }
