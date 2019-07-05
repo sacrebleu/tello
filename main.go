@@ -1,29 +1,28 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
 	"gobot.io/x/gobot"
 	"gobot.io/x/gobot/platforms/dji/tello"
 	"log"
-	"math/rand"
+	"math"
 	"os"
 	"os/signal"
 	"path"
 	"syscall"
 	"time"
-	"flag"
 
-	ui "github.com/gizak/termui/v3"
-
+	"tello/util"
 	//"tello/route"
 	"tello/video"
-	"tello/util"
 
 	//ui "github.com/gizak/termui/v3"
 )
 
-var connect = true
+var dryrun = false
 
 var buffer util.Buffer
 
@@ -32,9 +31,9 @@ var ap = path.Join(gp, "src/tello/cfg")
 
 var flightPath = ap
 
+// this is the main entry point into the application.
 func main() {
-	flag.StringVar(&flightPath, "path", "path/to/flightplan.fp", "Specify the path to the flightplan you want to load")
-	flag.Parse()
+	parseCli()
 
 	buffer = util.Buffer.New(util.Buffer{}, 5)
 
@@ -44,7 +43,7 @@ func main() {
 
 	screen := buildUi()
 
-	if connect {
+	if !dryrun {
 		dev = initDrone()
 	}
 
@@ -67,23 +66,44 @@ func main() {
 
 	//route.Tabulate(plan)
 	buffer.Append("Connecting to Drone...")
-	if connect {
+	if dryrun {
+		buffer.Append("dummy mode enabled")
+		ticker := time.NewTicker(time.Second).C
+		for app.Live {
+			select {
+			case <-ticker:
+				updateTelemetry(util.MockFlightData(), screen.Telemetry)
+			}
+		}
+	} else {
+		events := dev.Drone.Subscribe()
+
+		for app.Live {
+			ev, _ := <-events
+			fmt.Println(ev)
+			if ev.Name == "FlightDataEvent" {
+				fd, ok := ev.Data.(tello.FlightData)
+				if ok {
+					updateTelemetry(fd, screen.Telemetry)
+				}
+			}
+		}
 		err := dev.Robot.Start()
 		if err != nil {
 			log.Fatal("Error", err)
-		}
-	} else {
-		buffer.Append("dummy mode enabled")
-		for app.Live {
-			time.Sleep(1*time.Second)
-			//buffer.Append(fmt.Sprintf("%b", app.Live))
-			//buffer.Append("still aLive")
 		}
 	}
 
 }
 
-// listen for ^C and attempt to issue a graceful shutdown
+// consume any command line arguments
+func parseCli() {
+	flag.StringVar(&flightPath, "path", "./cfg/scare_the_cats.fp", "Specify the path to the flightplan you want to load")
+	flag.BoolVar(&dryrun, "dryrun", false, "Enable/Disable drone connection for development [default enabled]")
+	flag.Parse()
+}
+
+// listen for SIGINT + SIGTERM and attempt to issue a graceful shutdown
 func registerShutdownHook(app util.Application) {
 	signal.Notify(app.Ctrl, os.Interrupt, syscall.SIGINT)
 	signal.Notify(app.Ctrl, os.Interrupt, syscall.SIGTERM)
@@ -92,7 +112,7 @@ func registerShutdownHook(app util.Application) {
 		defer ui.Close() // only close the tty once we're done
 		<-app.Ctrl
 		buffer.Append("Shutting down connection to drone")
-		if connect {
+		if !dryrun {
 			if app.Dev != nil && app.Dev.Drone != nil {
 				cleanup(app.Dev.Drone)
 			}
@@ -115,9 +135,7 @@ func initDrone() util.Device {
 		func() { video.Grab(drone) },
 	)
 
-	dev := util.Device{ Drone: drone, Robot: robot}
-
-	return dev
+	return util.Device{ Drone: drone, Robot: robot}
 }
 
 // clean shutdown of the Tello drone
@@ -140,36 +158,41 @@ func buildUi() * util.Screen {
 	hp := widgets.NewParagraph()
 	hp.Title = "DJI Tello Telemetry"
 	//hp.Text
-	hp.SetRect(0, 0, 120, 30)
+	hp.SetRect(0, 0, 140, 30)
 	hp.BorderStyle.Fg = ui.ColorWhite
 
 	hlp := widgets.NewParagraph()
 	hlp.Title = " q - quit   j - scroll down   k - scroll up "
-	hlp.SetRect(0, 29, 120, 30)
+	hlp.SetRect(0, 29, 140, 30)
 
 	//p := widgets.NewParagraph()
 	p := widgets.NewList()
 	p.Title = "Telemetry"
 	p.Rows = buffer.Values
-	p.SetRect(1,  1, 80, 8)
+	p.SetRect(1,  1, 110, 8)
 	p.BorderStyle.Fg = ui.ColorWhite
-
-	spd := widgets.NewParagraph()
-	spd.SetRect(81, 1, 119, 5)
-	spd.BorderStyle.Fg = ui.ColorWhite
-	spd.Title = "Drone Speed"
 
 	fp := widgets.NewList()
 	fp.Title = "Flight Plan"
-	fp.SetRect(1, 8, 80, 16)
+	fp.TextStyle = ui.NewStyle(ui.ColorCyan)
+	fp.WrapText = false
 	p.BorderStyle.Fg = ui.ColorWhite
+	fp.SetRect(1, 8, 110, 16)
 
 	s := &util.Screen{
 		LogArea: p,
-		Speed: spd,
 		FlightPlan: fp,
 		Help : hp,
 	}
+
+	spd := widgets.NewParagraph()
+	spd.SetRect(111, 1, 139, 8)
+	spd.BorderStyle.Fg = ui.ColorWhite
+	spd.Title = "Speed"
+
+	disp := util.NewCompass(111, 8, 139, 24)
+
+	s.Telemetry = util.Telemetry{Speed: spd, Direction: disp}
 
 	ui.Render(hp, hlp)
 
@@ -183,7 +206,6 @@ func render(app * util.Application) {
 	for app.Live {
 		select {
 		case e := <-uiEvents:
-			//buffer.Append(fmt.Sprintf("event: %s", e.ID))
 			switch e.ID {
 			case "q", "<C-c>":
 				app.Ctrl <- syscall.SIGTERM // invoke cleanup / shutdown handler
@@ -193,7 +215,7 @@ func render(app * util.Application) {
 				app.Ui.FlightPlan.ScrollUp()
 			}
 		case <-ticker:
-			app.Ui.DisplayAirspeed(rand.Float32() + 1, rand.Float32()+2)
+			app.FlightPlan.Next()
 			refreshElements(app)
 		}
 	}
@@ -201,6 +223,18 @@ func render(app * util.Application) {
 
 func refreshElements(app * util.Application) {
 	app.Ui.LogArea.Rows = buffer.Values
-	app.Ui.FlightPlan.Rows = app.FlightPlan
-	ui.Render(app.Ui.LogArea, app.Ui.Speed, app.Ui.FlightPlan)
+	app.Ui.FlightPlan.Rows = app.FlightPlan.Render()
+	ui.Render(app.Ui.LogArea, app.Ui.FlightPlan)
+	ui.Render(app.Ui.Telemetry.Direction, app.Ui.Telemetry.Speed)
+}
+
+func updateTelemetry(data tello.FlightData, telemetry util.Telemetry) {
+	angle := math.Atan2(float64(data.NorthSpeed), float64(data.EastSpeed))
+	bearing := angle * 180/math.Pi
+
+	var degs = int16(90 - bearing + 360) % 360 // radians
+
+	telemetry.Speed.Text = fmt.Sprintf("Airspeed: %f\nGroundSpeed: %f\nVertical: %d", data.AirSpeed(), data.GroundSpeed(), data.VerticalSpeed)
+	telemetry.Direction.Title = fmt.Sprintf("Bearing %d" , degs) // convert to degrees
+	telemetry.Direction.AngleOffset = -angle
 }
